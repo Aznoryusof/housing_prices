@@ -1,0 +1,3 @@
+R Version 3.5.1
+RStudio Version 1.1.456
+packages => "tidyverse", "data.table", "lubridate", "skimr", "psych", "factoextra", "cluster", "ggplot2", "shiny", "plotly", "colourpicker", "caret", "caretEnsemble", "kernlab", "glmnet", "broom", "gvlma", "car", "DataExplorer", "RANN", "doParallel"

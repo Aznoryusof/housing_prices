@@ -1,0 +1,701 @@
+---
+title: "Housing valuation in Xindian, Taipei (with Shiny)"
+author: "Mohamad Aznor Bin Mohamed Yusof"
+date: "20 June 2019"
+output: html_document
+runtime: shiny
+---
+
+## **Background**
+
+The fully rendered document to view the analysis can be accessed here:
+<https://aznoryusof.shinyapps.io/eda1/>
+
+***Note: some plots can only be rendered on the server***
+
+The following is an analysis of historical data of housing transactions for Xindian District in New Taipei City, Taiwan from August 2012 to July 2013. 
+
+The dataset contains the following variables for analysis:
+
+* X1 transaction date
+* X2 house age
+* X3 distance to the nearest MRT station
+* X4 number of convenience stores
+* X5 latitude
+* X6 longitude
+* Y house price of unit area
+
+
+## **Executive Summary**
+
+The objective of this analysis is to identify important factors that affect housing prices, and identify patterns in the data that could help housing buyers make better decisions on their investment
+
+First, descriptive analysis will be conducted. Then we will identify important factors that influence housing prices using the multiple linear regression method. We will then analyse the clusters in the data, and look at the trends of housing prices over a one-year period.
+
+We will then attempt to identify houses which could be worth more from July 2013 onwards.
+
+
+
+
+## **1 Data Preparation**
+
+
+
+#### **1a. Load libraries**
+
+
+First, let's load the necessary libraries to help us with the analysis:
+
+
+```{r setup, warning = FALSE, message = FALSE}
+### libraries to use
+
+# Data wrangling and cleaning  
+library(tidyverse)
+library(data.table)
+library(lubridate)
+
+# Fast EDA
+library(skimr)
+library(psych)
+
+# Clustering
+library(factoextra)
+library(cluster)
+
+# Visualisation
+library(ggplot2)
+library(shiny)
+library(plotly)
+library(colourpicker)
+
+# Modelling 
+library(caret)
+library(broom)
+library(gvlma)
+library(car)
+```
+
+
+
+#### **1b. Load and clean the data**
+
+Next the data is loaded into our session, and cleaned to create the final data for analysis. 
+
+
+The following procedures were undertaken to clean the data:
+
+* removing space from names
+* converting necessary variables to numeric
+
+
+We will deal with labelling the month and year variable later.
+
+
+```{r load & clean data, results = "hide", warning = FALSE, message = FALSE}
+
+### read in data 
+RawData <- fread("https://aisgaiap.blob.core.windows.net/aiap4-assessment/real_estate.csv", 
+                 colClasses = "character")
+
+### clean column names
+OldNames <- names(RawData)
+NewNames <- c("Id", "X1.Transaction_Dt", "X2.Age", "X3.MRT_Dist", "X4.Stores_No", "X5.Latitude", "X6.Longitude", "Y.Hse_Price")
+setnames(RawData, OldNames, NewNames)
+rm(OldNames)
+rm(NewNames)
+
+### Month_Year available: Aug_2012 to July_2013
+RawData$X1 %>% unique() %>% sort()
+
+### convert to numeric
+Data_Final <- RawData %>%
+  mutate_at(vars(2:length(RawData)), as.numeric) %>%
+  as.data.table()
+
+```
+
+
+
+We will use the following clean data for our analysis:
+
+
+```{r view data, warning = FALSE, message = FALSE}
+
+### examine the dataset
+str(Data_Final)
+head(Data_Final)
+
+```
+
+
+
+## **2 Exploratory Data Analysis**
+
+
+
+#### **2a. Descriptive statistics**
+
+
+Using a function called skim_to_wide, and pairs.panel, we can view the distribution of the variables. 
+
+A few things stand out:
+
+* the distribution of the transaction date is multi-modal, which hints that there could be a seasonal pattern, where more transactions takes place  during the December and June periods.
+* the distribution of the houses is extremely right-skewed, suggesting that most of the houses cluster around the MRT
+* unexpectedly, the price of the houses are positively correlated (moderate) to the number of stores and negatively correlated (moderate) to the distance of MRT to the house.
+
+
+
+```{r descriptive statistics, warning = FALSE, message = FALSE}
+### distribution of variables
+Data_Final %>%
+  select(-1) %>%
+  skim_to_wide() %>%
+  select(1:7, 10, 12, 13)
+  
+### relationships between the variables?
+Data_Final %>%
+  select(-1) %>%
+  pairs.panels()
+
+```
+
+
+
+#### **2b. Analysis with multiple linear regression**
+
+
+Running a multiple linear regression model, we find that the following attributes, have acceptable combined explainatory power on housing price with an Adjusted R-squared value of 0.5509:
+
+* X2 house age
+* X3 distance to the nearest MRT station
+* X4 number of convenience stores
+* X1.Transaction_Dt
+
+The VIF values, which measures how much the variance of a regression coefficient is inflated due to multicollinearity in the model, are also acceptable.
+
+
+```{r multiple regression, warning = FALSE, message = FALSE}
+
+### multiple linear regression
+lm1_formula <- as.formula(Y.Hse_Price ~ X2.Age + X3.MRT_Dist + X4.Stores_No + X1.Transaction_Dt)
+
+set.seed(99)
+model_lm1 <- lm(lm1_formula, Data_Final)
+
+summary(model_lm1)
+vif(model_lm1)
+
+```
+
+
+
+
+#### **2c. Implications**
+
+The results shows that transaction prices have been increasing significantly over the months, keeping everying else constant.
+
+
+In addition, a one-unit increase in the number of stores, increases the price of the house by 1.26 per unit, keeping everything else constant.
+
+
+Age on the other hand, had a significant negative effect on the price of housing, with an increase in a unit of age leading to a decrease in 0.254 unit of price.
+
+
+This suggests that in terms of purchasing a house, it may be more important to purchase one that has many shops around it, and is new. Houses during that period also tend to appreciate over time. Hence, it would be good to purchase a house for investment purposes.
+
+
+```{r implications, echo = FALSE, warning = FALSE, message = FALSE}
+# view coefficients
+round((model_lm1$coefficients), 5)
+```
+
+
+
+## **3 Clustering**
+
+
+
+#### **3a. Determining the number of clusters**
+
+
+To further sieve out patterns in our data, clustering analsis will be carried out. In this analysis, we will be using k-means clusturing approach.
+
+
+First, using the elbow and silhoutte plot diagnostics in the dashboard, we can determine the best number of clusters for the variables that we would like to cluster on.
+
+
+
+```{r k-means diagnostics, echo =  FALSE, warning = FALSE, message = FALSE}
+  
+  # ui
+  ui <- fluidPage(
+    h1("K-means Elbow & Silhouette plots"),
+      theme = "shinythemes",
+      tabPanel("K-means",
+        sidebarPanel(
+          selectInput("attributes", "Select attributes to cluster on",
+                  choices = names(Data_Final[, -1]),
+                  multiple = TRUE,
+                  selected = c("X4.Stores_No", "5.Latitude", "X6.Longitude")
+                      )
+                     ),
+        mainPanel(
+          tabsetPanel(
+            tabPanel("Elbow Plot", plotOutput("elbow_plot")),
+            tabPanel("Silhoutte Plot", plotOutput("silhoutte_plot"))
+          )
+        )
+      )
+  )
+  
+  # server
+  
+  
+server <- function(input, output, session) {
+  
+  # create reactive function
+  filtered_data <- reactive({
+    data <- Data_Final
+    data <- select(
+      data, input$attributes
+    )
+    data
+  })
+  
+  # create reactive function for k-means clustering
+  Clustered_data <- reactive({
+    data <- Data_Final
+    data <- select(
+      data, input$attributes
+    )
+    set.seed(99)
+    num_cluster <- input$k_num
+    k_means <- kmeans(data, centers = num_cluster, iter.max=50, nstart=25)
+    data_clustered <- data %>% mutate(clusters = k_means$cluster)
+    data_clustered
+  })
+  
+  # render elbow plot
+  output$elbow_plot <- renderPlot({
+    data <- filtered_data()
+    data <- scale(data)
+    elbow_method <- fviz_nbclust(data, kmeans, "wss")
+    elbow_method
+  })
+  
+  
+  # render silhoutte plot
+  output$silhoutte_plot <- renderPlot({
+    data <- filtered_data()
+    data <- scale(data)
+    silhouette_method <- fviz_nbclust(data, kmeans, "silhouette")
+    silhouette_method
+  })
+
+}
+  
+# run app
+  shinyApp(ui = ui, server = server)
+  
+```
+
+
+
+
+#### **3b. Running k-means and visualising the clusters on a map**
+
+
+Next, we will choose to use the Latitude, Longitude and the Number of stores as our clustering variables. If we do this, based on the above dashboard, the optimal number of clusters identified would be 7.
+
+
+The clusters is then mapped on a scatterplot, to be further explored. 
+
+Based on the clusters identified and analysing the summary statistics, we can see that the following groups emerge:
+
+* clusters 2, 6, and 7 are located close to each other, and clustered near where all the shops are. These are also clusters with high average price
+* cluster 1 are houses with fairly high prices, but have very low amount of shops, and are typically further from the MRT.
+* cluster 3 and 5 houses are fairly low priced, and could be largely because relatively low number of stores available in the vicinity.
+* cluster 4 houses are very low in prices because they are relatively older, are very far away from the MRT and have very low number of stores.
+
+
+
+```{r k-means map, echo =  FALSE, warning = FALSE, message = FALSE}
+  
+  # ui
+  ui <- fluidPage(
+    h1("K-means: Latitude, Longitude and Number of stores"),
+      theme = "shinythemes",
+      tabPanel("K-means",
+        sidebarPanel(
+          numericInput("k_num", "Select number of clusters", value = 7, min = 2, max = 10, step = 1),
+          numericInput("alpha", "Adjust point transparency", value = 0.6, min = 0, max = 1, step = 0.1),
+          numericInput("size", "Adjust point size", value = 2, min = 0.5, max = 5, step = 0.5)
+                     ),
+        mainPanel(
+          tabsetPanel(
+            tabPanel("Clusters", plotlyOutput("cluster")),
+            tabPanel("Summary of Clusters", DT:: dataTableOutput("cluster_table"))
+          )
+        )
+      )
+  )
+  
+  # server
+  
+  
+server <- function(input, output) {
+  
+
+  # create reactive function for k-means clustering
+  Clustered_data <- reactive({
+    data <- Data_Final
+    data <- select(data, 
+                   c(X4.Stores_No, X5.Latitude, X6.Longitude)
+                   )
+    data <- data %>% scale()
+    
+    set.seed(99)
+    num_cluster <- input$k_num
+    k_means <- kmeans(data, centers = num_cluster, iter.max=50, nstart=25)
+    clustered_data <- Data_Final %>% mutate(clusters = k_means$cluster)
+    clustered_data
+  })
+  
+  #render plotly
+   output$cluster <- renderPlotly({
+        ggplotly({
+         data <- Clustered_data()
+         ggplot(data, aes(x=X5.Latitude, y=X6.Longitude, colour = factor(clusters))) +
+         geom_point(alpha=input$alpha, size = input$size) +
+         xlab("Latitude")+
+         ylab("Longitude")+ 
+         ggtitle("Clusters over geo location")
+         })
+    })
+   
+  # render output table
+  output$cluster_table <- DT::renderDataTable({
+   Clustered_data() %>% 
+    group_by(clusters) %>%
+    summarise(n = n(),
+            Avg_Age = mean(X2.Age),
+            Avg_Dist_MRT = mean(X3.MRT_Dist),
+            Avg_No_Stores = mean(X4.Stores_No),
+            Min_Hse_Price = min(Y.Hse_Price),
+            Max_Hse_Price = max(Y.Hse_Price),
+            Avg_Hse_Price = mean(Y.Hse_Price))
+  })
+  
+}
+  
+  
+# run app
+  shinyApp(ui = ui, server = server)
+  
+```
+
+
+
+
+#### **3c. Analysing the trend of prices for the clusters identified**
+
+
+
+Analysing the trend of prices of the clusters, apart from cluster 7, most have seen an increase in housing prices from Aug 2012 to July 2013.  
+
+
+Based on the linear statistics, clusters 2 and 6 showed significant increases in prices since Aug 2012. 
+
+
+```{r clean dates, echo =  FALSE, warning = FALSE, message = FALSE}
+  
+  # Data final
+  k_means_data <- select(Data_Final, 
+                 c(X4.Stores_No, X5.Latitude, X6.Longitude)
+                 )
+  k_means_data <- k_means_data %>% scale()
+    
+  set.seed(99)
+  num_cluster <- 7
+  k_means <- kmeans(k_means_data, centers = num_cluster, iter.max=50, nstart=25)
+  Data_Final_Clustered <- Data_Final %>% mutate(clusters = k_means$cluster)
+
+
+  # clean dates: initialise
+  Data_Final_Clustered$X1.Transaction_Dt_Labelled <- as.Date(dmy("01-01-1990"))  
+  Data_Final_Clustered <- Data_Final_Clustered %>% as.data.table()
+  # clean dates: replace with start of month
+  Data_Final_Clustered[X1.Transaction_Dt == "2012.667", "X1.Transaction_Dt_Labelled" := dmy(c("01-08-2012"))]
+  Data_Final_Clustered[X1.Transaction_Dt == "2012.75", "X1.Transaction_Dt_Labelled" := dmy(c("01-09-2012"))]
+  Data_Final_Clustered[X1.Transaction_Dt == "2012.833", "X1.Transaction_Dt_Labelled" := dmy(c("01-10-2012"))]
+  Data_Final_Clustered[X1.Transaction_Dt == "2012.917", "X1.Transaction_Dt_Labelled" := dmy(c("01-11-2012"))]
+  Data_Final_Clustered[X1.Transaction_Dt == "2013", "X1.Transaction_Dt_Labelled" := dmy(c("01-12-2012"))]
+  Data_Final_Clustered[X1.Transaction_Dt == "2013.083", "X1.Transaction_Dt_Labelled" := dmy(c("01-01-2013"))]
+  Data_Final_Clustered[X1.Transaction_Dt == "2013.167", "X1.Transaction_Dt_Labelled" := dmy(c("01-02-2013"))]
+  Data_Final_Clustered[X1.Transaction_Dt == "2013.25", "X1.Transaction_Dt_Labelled" := dmy(c("01-03-2013"))]
+  Data_Final_Clustered[X1.Transaction_Dt == "2013.333", "X1.Transaction_Dt_Labelled" := dmy(c("01-04-2013"))]
+  Data_Final_Clustered[X1.Transaction_Dt == "2013.417", "X1.Transaction_Dt_Labelled" := dmy(c("01-05-2013"))]
+  Data_Final_Clustered[X1.Transaction_Dt == "2013.5", "X1.Transaction_Dt_Labelled" := dmy(c("01-06-2013"))]
+  Data_Final_Clustered[X1.Transaction_Dt == "2013.583", "X1.Transaction_Dt_Labelled" := dmy(c("01-07-2013"))]
+  
+```
+
+
+
+```{r cluster: analyse trend of Price for clusters, echo =  FALSE, warning = FALSE, message = FALSE}
+  
+  # ui
+  ui <- fluidPage(
+    h1("Trend analysis of clusters"),
+      theme = "shinythemes",
+      sidebarLayout(
+        sidebarPanel(
+          sliderInput(inputId = "Year_Month", label = "Month Year of transaction",
+                        min = min(Data_Final_Clustered$X1.Transaction_Dt_Labelled), 
+                        max = max(Data_Final_Clustered$X1.Transaction_Dt_Labelled),
+                        value = c(min(Data_Final_Clustered$X1.Transaction_Dt_Labelled), 
+                                  max(Data_Final_Clustered$X1.Transaction_Dt_Labelled)),
+                        timeFormat= "%b %Y"
+                      ),
+          selectInput("clusters", "Clusters",
+                        choices = c("All", levels(factor(Data_Final_Clustered$clusters)))
+                      )
+          ),
+        mainPanel(
+            plotlyOutput("plot"),
+            DT:: dataTableOutput("LMsummary"),
+            DT:: dataTableOutput("LMestimates"),
+            DT:: dataTableOutput("Count")
+            )
+          )
+    )
+  
+  # server
+  
+  
+server <- function(input, output) {
+  
+  # create reactive function
+  filtered_data <- reactive({
+    data <- Data_Final_Clustered
+    data <- subset(
+      data,
+      X1.Transaction_Dt_Labelled >= input$Year_Month[1] & X1.Transaction_Dt_Labelled <= input$Year_Month[2]
+    )
+    if (input$clusters != "All") {
+      data <- subset(
+        data,
+        clusters == input$clusters
+      )
+    }
+    data
+  })
+  
+  # create reactive function for summary table
+  summary_data <- reactive({
+    data2 <- filtered_data() %>%
+      group_by(clusters, X1.Transaction_Dt, X1.Transaction_Dt_Labelled) %>%
+      summarise(n = n(),
+            Avg_P = mean(Y.Hse_Price))
+  })
+  
+  
+  # render summary table
+  output$LMsummary <- DT::renderDataTable({
+    data <- summary_data()
+    data %>%
+      ungroup() %>%
+      group_by(clusters) %>%
+      do(glance(
+        lm(Avg_P ~ X1.Transaction_Dt, data = .))) %>%
+      arrange(p.value, -adj.r.squared)
+  })
+  
+
+  # render estimates and significance table (statistically significant only) 
+  output$LMestimates <- DT::renderDataTable({
+    data <- summary_data()
+    data %>%
+      ungroup() %>%
+      group_by(clusters) %>%
+      do(tidy(
+        lm(Avg_P ~ X1.Transaction_Dt, data = .))) %>%
+      arrange(p.value) %>%
+      filter(p.value <= 0.05)
+  })
+  
+  
+  # show number of data per point
+  output$Count <- DT::renderDataTable({
+    data <- filtered_data()
+    data %>%
+      ungroup() %>%
+      group_by(clusters, X1.Transaction_Dt_Labelled = format(as.Date(X1.Transaction_Dt_Labelled), "%Y-%m")) %>%
+      summarise(n = n()) %>%
+      arrange(clusters, X1.Transaction_Dt_Labelled)
+  })
+  
+
+    #render plotly
+  output$plot <- renderPlotly({
+    ggplotly({
+      data <- summary_data()
+      ggplot(data, aes(x=X1.Transaction_Dt_Labelled, y=Avg_P, colour = factor(clusters))) +
+      geom_smooth(method = 'lm', se = F, size = 0.5) +
+      geom_point() +
+      xlab("Month_Year") +
+      ylab("Average transaction price")+
+      ggtitle("Trend of transaction price by clusters")
+    })
+  })
+}
+  # run app
+  shinyApp(ui = ui, server = server)
+
+  
+```
+
+
+
+#### **3d. Final thoughts**
+
+
+
+Using the analysis above, the following houses in clusters 2 and 6 seem to be worth purchasing, with relatively lower prices, higher number of stores, and newer in age:
+
+* No. 272 and No. 200 in cluster 2 and
+* No. 398 and No. 401 in cluster 6
+
+
+For further analysis, the following dashboard is available:
+
+
+
+```{r Dashboard, echo =  FALSE, warning = FALSE, message = FALSE}
+  
+  # ui
+  ui <- fluidPage(
+    h1("Dashboard"),
+      theme = "shinythemes",
+      tabPanel("Dashboard",
+        sidebarPanel(
+          sliderInput(inputId = "Year_Month", label = "Month Year of transaction",
+                        min = min(Data_Final_Clustered$X1.Transaction_Dt_Labelled), 
+                        max = max(Data_Final_Clustered$X1.Transaction_Dt_Labelled),
+                        value = c(min(Data_Final_Clustered$X1.Transaction_Dt_Labelled),
+                                  max(Data_Final_Clustered$X1.Transaction_Dt_Labelled)),
+                        timeFormat= "%b %Y"
+                      ),
+          sliderInput(inputId = "price", label = "House price of unit area",
+                        min = min(Data_Final_Clustered$Y.Hse_Price), max = max(Data_Final_Clustered$Y.Hse_Price),
+                        value = c(min(Data_Final_Clustered$Y.Hse_Price), max(Data_Final_Clustered$Y.Hse_Price))
+                      ),
+          selectInput("clusters", "Clusters",
+                        choices = c("All", levels(factor(Data_Final_Clustered$clusters)))
+                      ),
+          numericInput("alpha", "Adjust point transparency", value = 0.6, min = 0, max = 1, step = 0.1),
+          numericInput("size", "Adjust point size", value = 2, min = 0.5, max = 5, step = 0.5),
+          downloadButton("download_data")
+          ),
+        mainPanel(
+          tabsetPanel(
+            tabPanel("Scatter plot", plotlyOutput("plot")),
+            tabPanel("Summary data by clusters", DT::dataTableOutput("summary")),
+            tabPanel("Raw data", DT::dataTableOutput("table"))
+          )
+        )
+      )
+  )
+  
+  # server
+  
+  
+server <- function(input, output) {
+  
+  # create reactive function
+  filtered_data <- reactive({
+    data <- Data_Final_Clustered
+    data <- subset(
+      data,
+      X1.Transaction_Dt_Labelled >= input$Year_Month[1] & 
+        X1.Transaction_Dt_Labelled <= input$Year_Month[2] & 
+        Y.Hse_Price >= input$price[1] & 
+        Y.Hse_Price <= input$price[2]
+    )
+    if (input$clusters != "All") {
+      data <- subset(
+        data,
+        clusters == input$clusters
+      )
+    }
+    data
+  })
+  
+  # create reactive function for summary table
+  summary_data <- reactive({
+    data2 <- filtered_data() %>%
+      group_by(clusters) %>%
+      summarise(No_sales = n(),
+            Avg_Age = mean(X2.Age),
+            Avg_Dist_MRT = mean(X3.MRT_Dist),
+            Avg_No_Stores = mean(X4.Stores_No),
+            Min_Hse_Price = min(Y.Hse_Price),
+            Max_Hse_Price = max(Y.Hse_Price),
+            Avg_Hse_Price = mean(Y.Hse_Price))
+  }) 
+  
+  # render summary table
+  output$summary <- DT::renderDataTable({
+    data <- summary_data()
+    data
+  })
+  
+  
+  # render output table
+  output$table <- DT::renderDataTable({
+    data <- filtered_data()
+    data
+  })
+  
+  # render download data
+  output$download_data <- downloadHandler(
+    filename = "clustered_data.csv",
+    content = function(file) {
+      data <- filtered_data()
+      write.csv(data, file, row.names = FALSE)
+    }
+  )
+
+  #render plotly
+  output$plot <- renderPlotly({
+    ggplotly({
+      data <- filtered_data()
+      ggplot(data, aes(x=X5.Latitude, y=X6.Longitude, colour = factor(clusters))) +
+      geom_point(alpha=input$alpha, size = input$size, aes(text = paste("Price: $", Y.Hse_Price, sep = ""))) +
+      xlab("Latitude") +
+      ylab("Longitude") +
+      ggtitle("Clusters over geo location")
+    })
+  })
+}
+  # run app
+  shinyApp(ui = ui, server = server)
+
+```
+
+
+### *----------------------- End of Task 1 -----------------------*
+
+
+
+
+
+
+
+
+
+
+
+
