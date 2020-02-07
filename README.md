@@ -22,7 +22,7 @@ The source code can be found in the document titled "eda.Rmd"
 
 ## Running the Machine Learning Pipeline
 
-Run the "MLPipeline.R" script to execute the machine learning task. The script will conduct machine learning on the data, and output the results into four folders. 
+Run the "MLPipeline.R" script to execute the machine learning task. The script will conduct machine learning on the data, and output the results into four folders within the "mlp output" subdirectory.
 
 The following are the steps taken for building the model and evaluating its performance: 
 1. Set up the working directories 
