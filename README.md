@@ -42,4 +42,4 @@ The following results of the machine learning tasks can be attained in the relev
 1. Clustering Analysis
 2. Exploratory Data Analysis
 3. Model Performance, including the Ensembles
-4. Evaluation of Model performances
+4. Evaluation of Model Performances
